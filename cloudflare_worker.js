@@ -251,7 +251,14 @@ function jsonResponse(body, status = 200) {
 
 export default {
   async scheduled(controller, env) {
-    await run(env);
+    console.log(`Cron iniciado: ${new Date(controller.scheduledTime).toISOString()}`);
+    try {
+      const result = await run(env);
+      console.log(`Cron completado: ${JSON.stringify(result)}`);
+    } catch (error) {
+      console.error(`Cron fallido: ${error.message}`);
+      throw error;
+    }
   },
 
   async fetch(request, env) {
