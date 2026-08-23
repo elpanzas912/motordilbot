@@ -1,0 +1,15 @@
+{
+  "name": "motordil-telegram-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Notifica nuevas publicaciones de Motordil por Telegram.",
+  "scripts": {
+    "check": "node --check motordil_telegram_bot.js",
+    "dry-run": "node motordil_telegram_bot.js --dry-run",
+    "chat-id": "node motordil_telegram_bot.js --chat-id",
+    "start": "node motordil_telegram_bot.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
