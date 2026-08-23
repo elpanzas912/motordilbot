@@ -1,4 +1,5 @@
 {
   "initialized": false,
-  "knownIds": []
+  "knownIds": [],
+  "confirmationSent": false
 }

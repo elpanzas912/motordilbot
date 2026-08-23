@@ -138,13 +138,14 @@ function normalizeListing(listing) {
 }
 
 function loadState() {
-  if (!fs.existsSync(STATE_FILE)) return { initialized: false, knownIds: [] };
+  if (!fs.existsSync(STATE_FILE)) return { initialized: false, knownIds: [], confirmationSent: false };
 
   try {
     const state = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
     return {
       initialized: Boolean(state.initialized),
-      knownIds: Array.isArray(state.knownIds) ? state.knownIds.map(String) : []
+      knownIds: Array.isArray(state.knownIds) ? state.knownIds.map(String) : [],
+      confirmationSent: Boolean(state.confirmationSent)
     };
   } catch (error) {
     throw new Error(`No se pudo leer ${STATE_FILE}: ${error.message}`);
@@ -221,6 +222,20 @@ async function sendListing(listing, token, chatId) {
   }, token);
 }
 
+async function sendActivationConfirmation(state, token, chatId) {
+  if (state.confirmationSent) return;
+
+  await telegramRequest("sendMessage", {
+    chat_id: chatId,
+    text: "<b>Motordil Avisos está activo</b>\n\nLa revisión automática de nuevas publicaciones quedó configurada cada 5 minutos.",
+    parse_mode: "HTML"
+  }, token);
+
+  state.confirmationSent = true;
+  saveState(state);
+  console.log("Confirmación de activación enviada.");
+}
+
 async function printChatIds(token) {
   const updates = await telegramRequest("getUpdates", { limit: 100 }, token);
   const chats = new Map();
@@ -260,7 +275,10 @@ async function main() {
 
   if (isFirstRun && !SEND_EXISTING_ON_FIRST_RUN) {
     mergeKnownIds(state, listings);
-    if (!DRY_RUN) saveState(state);
+    if (!DRY_RUN) {
+      saveState(state);
+      await sendActivationConfirmation(state, token, process.env.TELEGRAM_CHAT_ID);
+    }
     console.log("Primera ejecución: se guardó el estado sin enviar el lote existente.");
     return;
   }
@@ -282,6 +300,7 @@ async function main() {
 
   mergeKnownIds(state, listings);
   saveState(state);
+  await sendActivationConfirmation(state, token, process.env.TELEGRAM_CHAT_ID);
 }
 
 main().catch(error => {
