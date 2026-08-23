@@ -2,6 +2,7 @@ const API_URL = "https://prod-api.motordil.com/graphql";
 const STATE_KEY = "motordil-state";
 const PAGE_LIMIT = 500;
 const TELEGRAM_DELAY_MS = 1200;
+const NUMBER_FORMATTER = new Intl.NumberFormat("es-AR");
 
 const LISTINGS_QUERY = `
   query Listings($request: ListingsRequest!) {
@@ -97,7 +98,7 @@ function normalizeListing(listing) {
     .join(" ");
   const price = listing.price === null || listing.price === undefined
     ? "No informado"
-    : `${listing.currency?.symbol || ""} ${new Intl.NumberFormat("es-AR").format(listing.price)}`.trim();
+    : `${listing.currency?.symbol || ""} ${NUMBER_FORMATTER.format(listing.price)}`.trim();
 
   return {
     id: String(listing.id),
@@ -150,7 +151,7 @@ function escapeHtml(value) {
 function formatListing(listing) {
   const details = [
     listing.year && `Año: ${listing.year}`,
-    listing.kilometers !== null && listing.kilometers !== undefined && `KM: ${new Intl.NumberFormat("es-AR").format(listing.kilometers)}`,
+    listing.kilometers !== null && listing.kilometers !== undefined && `KM: ${NUMBER_FORMATTER.format(listing.kilometers)}`,
     listing.transmission && `Caja: ${listing.transmission}`,
     listing.fuel && `Combustible: ${listing.fuel}`
   ].filter(Boolean);
