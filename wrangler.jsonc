@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "motordil-telegram-bot",
+  "main": "cloudflare_worker.js",
+  "compatibility_date": "2026-08-23",
+  "workers_dev": true,
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "MOTORDIL_STATE",
+      "id": "REEMPLAZAR_CON_EL_ID_DE_KV"
+    }
+  ]
+}

@@ -7,7 +7,9 @@
     "check": "node --check motordil_telegram_bot.js",
     "dry-run": "node motordil_telegram_bot.js --dry-run",
     "chat-id": "node motordil_telegram_bot.js --chat-id",
-    "start": "node motordil_telegram_bot.js"
+    "start": "node motordil_telegram_bot.js",
+    "cloudflare:deploy": "npx wrangler@latest deploy",
+    "cloudflare:dev": "npx wrangler@latest dev"
   },
   "engines": {
     "node": ">=20"
