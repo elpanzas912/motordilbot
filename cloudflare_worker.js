@@ -235,6 +235,8 @@ async function run(env) {
   const knownSoldIds = new Set(state.soldKnownIds);
   const newLiveListings = liveListings.filter(listing => !knownLiveIds.has(listing.id)).reverse();
   const newSoldListings = soldListings.filter(listing => !knownSoldIds.has(listing.id)).reverse();
+  let sentLive = 0;
+  let sentSold = 0;
 
   if (!liveFirstRun || sendExisting) {
     for (const listing of newLiveListings) {
@@ -243,6 +245,7 @@ async function run(env) {
       state.knownIds = [...knownLiveIds].slice(-2000);
       state.initialized = true;
       await saveState(env, state);
+      sentLive++;
       await sleep(TELEGRAM_DELAY_MS);
     }
   }
@@ -254,6 +257,7 @@ async function run(env) {
       state.soldKnownIds = [...knownSoldIds].slice(-2000);
       state.soldInitialized = true;
       await saveState(env, state);
+      sentSold++;
       await sleep(TELEGRAM_DELAY_MS);
     }
   }
@@ -265,7 +269,7 @@ async function run(env) {
 
   return {
     checked: { live: liveListings.length, sold: soldListings.length },
-    sent: { live: newLiveListings.length, sold: newSoldListings.length },
+    sent: { live: sentLive, sold: sentSold },
     seeded: { live: liveFirstRun, sold: soldFirstRun }
   };
 }
