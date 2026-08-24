@@ -65,14 +65,15 @@ async function postJson(url, body, headers = {}) {
   throw lastError;
 }
 
-async function fetchListings() {
+async function fetchListings(listingStatus) {
+  const filters = { vehicleType: "CAR", listingStatus };
   const response = await postJson(
     API_URL,
     {
       query: LISTINGS_QUERY,
       variables: {
         request: {
-          filters: { vehicleType: "CAR" },
+          filters,
           page: 1,
           limit: PAGE_LIMIT
         }
@@ -116,13 +117,21 @@ function normalizeListing(listing) {
 
 async function loadState(env) {
   const raw = await env.MOTORDIL_STATE.get(STATE_KEY);
-  if (!raw) return { initialized: false, knownIds: [], confirmationSent: false };
+  if (!raw) return {
+    initialized: false,
+    knownIds: [],
+    soldInitialized: false,
+    soldKnownIds: [],
+    confirmationSent: false
+  };
 
   try {
     const state = JSON.parse(raw);
     return {
       initialized: Boolean(state.initialized),
       knownIds: Array.isArray(state.knownIds) ? state.knownIds.map(String) : [],
+      soldInitialized: Boolean(state.soldInitialized),
+      soldKnownIds: Array.isArray(state.soldKnownIds) ? state.soldKnownIds.map(String) : [],
       confirmationSent: Boolean(state.confirmationSent)
     };
   } catch (error) {
@@ -134,10 +143,10 @@ async function saveState(env, state) {
   await env.MOTORDIL_STATE.put(STATE_KEY, JSON.stringify(state));
 }
 
-function mergeKnownIds(state, listings) {
-  const ids = new Set([...state.knownIds, ...listings.map(listing => listing.id)]);
-  state.knownIds = [...ids].slice(-2000);
-  state.initialized = true;
+function mergeKnownIds(state, listings, key) {
+  const ids = new Set([...state[key], ...listings.map(listing => listing.id)]);
+  state[key] = [...ids].slice(-2000);
+  state[key === "knownIds" ? "initialized" : "soldInitialized"] = true;
 }
 
 function escapeHtml(value) {
@@ -148,7 +157,7 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-function formatListing(listing) {
+function formatListing(listing, kind) {
   const details = [
     listing.year && `Año: ${listing.year}`,
     listing.kilometers !== null && listing.kilometers !== undefined && `KM: ${NUMBER_FORMATTER.format(listing.kilometers)}`,
@@ -157,7 +166,7 @@ function formatListing(listing) {
   ].filter(Boolean);
 
   return [
-    "<b>Nueva publicación en Motordil</b>",
+    `<b>${kind === "sold" ? "Auto vendido recientemente en Motordil" : "Nueva publicación en Motordil"}</b>`,
     "",
     `<b>${escapeHtml(listing.title)}</b>`,
     `<b>Precio:</b> ${escapeHtml(listing.price)}`,
@@ -173,8 +182,8 @@ async function telegramRequest(method, body, token) {
   return response.result;
 }
 
-async function sendListing(listing, token, chatId) {
-  const text = formatListing(listing);
+async function sendListing(listing, token, chatId, kind) {
+  const text = formatListing(listing, kind);
 
   if (listing.image) {
     try {
@@ -214,33 +223,51 @@ async function sendActivationConfirmation(env, state, token, chatId) {
 async function run(env) {
   const token = requiredEnv(env, "TELEGRAM_BOT_TOKEN");
   const chatId = requiredEnv(env, "TELEGRAM_CHAT_ID");
-  const listings = await fetchListings();
+  const [liveListings, soldListings] = await Promise.all([
+    fetchListings("LIVE"),
+    fetchListings("SOLD")
+  ]);
   const state = await loadState(env);
-  const knownIds = new Set(state.knownIds);
-  const isFirstRun = !state.initialized;
-  const newListings = listings.filter(listing => !knownIds.has(listing.id)).reverse();
+  const sendExisting = env.SEND_EXISTING_ON_FIRST_RUN === "true";
+  const liveFirstRun = !state.initialized;
+  const soldFirstRun = !state.soldInitialized;
+  const knownLiveIds = new Set(state.knownIds);
+  const knownSoldIds = new Set(state.soldKnownIds);
+  const newLiveListings = liveListings.filter(listing => !knownLiveIds.has(listing.id)).reverse();
+  const newSoldListings = soldListings.filter(listing => !knownSoldIds.has(listing.id)).reverse();
 
-  if (isFirstRun && env.SEND_EXISTING_ON_FIRST_RUN !== "true") {
-    mergeKnownIds(state, listings);
-    await saveState(env, state);
-    await sendActivationConfirmation(env, state, token, chatId);
-    return { checked: listings.length, sent: 0, seeded: true };
+  if (!liveFirstRun || sendExisting) {
+    for (const listing of newLiveListings) {
+      await sendListing(listing, token, chatId, "live");
+      knownLiveIds.add(listing.id);
+      state.knownIds = [...knownLiveIds].slice(-2000);
+      state.initialized = true;
+      await saveState(env, state);
+      await sleep(TELEGRAM_DELAY_MS);
+    }
   }
 
-  for (const listing of newListings) {
-    await sendListing(listing, token, chatId);
-    knownIds.add(listing.id);
-    state.knownIds = [...knownIds].slice(-2000);
-    state.initialized = true;
-    await saveState(env, state);
-    await sleep(TELEGRAM_DELAY_MS);
+  if (!soldFirstRun || sendExisting) {
+    for (const listing of newSoldListings) {
+      await sendListing(listing, token, chatId, "sold");
+      knownSoldIds.add(listing.id);
+      state.soldKnownIds = [...knownSoldIds].slice(-2000);
+      state.soldInitialized = true;
+      await saveState(env, state);
+      await sleep(TELEGRAM_DELAY_MS);
+    }
   }
 
-  mergeKnownIds(state, listings);
+  if (liveFirstRun) mergeKnownIds(state, liveListings, "knownIds");
+  if (soldFirstRun) mergeKnownIds(state, soldListings, "soldKnownIds");
   await saveState(env, state);
   await sendActivationConfirmation(env, state, token, chatId);
 
-  return { checked: listings.length, sent: newListings.length, seeded: false };
+  return {
+    checked: { live: liveListings.length, sold: soldListings.length },
+    sent: { live: newLiveListings.length, sold: newSoldListings.length },
+    seeded: { live: liveFirstRun, sold: soldFirstRun }
+  };
 }
 
 function jsonResponse(body, status = 200) {
