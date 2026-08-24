@@ -4,26 +4,32 @@ const PAGE_LIMIT = 500;
 const TELEGRAM_DELAY_MS = 1200;
 const NUMBER_FORMATTER = new Intl.NumberFormat("es-AR");
 
-const LISTINGS_QUERY = `
-  query Listings($request: ListingsRequest!) {
+const LISTING_IDS_QUERY = `
+  query ListingIds($request: ListingsRequest!) {
     listings(request: $request) {
-      listings {
-        id
-        slug
-        status
-        price
-        year
-        odometer
-        currency { symbol }
-        media { mediaType uri }
-        metadata {
-          make { make normalized }
-          model
-          version
-          vehicleType
-        }
-        details { transmissionType fuelType }
+      listings { id }
+    }
+  }
+`;
+
+const LISTING_DETAIL_QUERY = `
+  query Listing($id: ID!) {
+    listing(id: $id) {
+      id
+      slug
+      status
+      price
+      year
+      odometer
+      currency { symbol }
+      media { mediaType uri }
+      metadata {
+        make { make normalized }
+        model
+        version
+        vehicleType
       }
+      details { transmissionType fuelType }
     }
   }
 `;
@@ -65,12 +71,12 @@ async function postJson(url, body, headers = {}) {
   throw lastError;
 }
 
-async function fetchListings(listingStatus) {
+async function fetchListingIds(listingStatus) {
   const filters = { vehicleType: "CAR", listingStatus };
   const response = await postJson(
     API_URL,
     {
-      query: LISTINGS_QUERY,
+      query: LISTING_IDS_QUERY,
       variables: {
         request: {
           filters,
@@ -88,7 +94,23 @@ async function fetchListings(listingStatus) {
 
   const listings = response.data?.listings?.listings;
   if (!Array.isArray(listings)) throw new Error("Motordil no devolvió publicaciones.");
-  return listings.map(normalizeListing).filter(listing => listing.id);
+  return listings.map(listing => String(listing.id)).filter(Boolean);
+}
+
+async function fetchListingDetail(id) {
+  const response = await postJson(
+    API_URL,
+    { query: LISTING_DETAIL_QUERY, variables: { id } },
+    {
+      Origin: "https://www.motordil.com",
+      Referer: "https://www.motordil.com/autos",
+      "User-Agent": "MotordilCloudflareWorker/1.0"
+    }
+  );
+
+  const listing = response.data?.listing;
+  if (!listing?.id) throw new Error(`Motordil no devolvió el detalle de ${id}.`);
+  return normalizeListing(listing);
 }
 
 function normalizeListing(listing) {
@@ -143,8 +165,8 @@ async function saveState(env, state) {
   await env.MOTORDIL_STATE.put(STATE_KEY, JSON.stringify(state));
 }
 
-function mergeKnownIds(state, listings, key) {
-  const ids = new Set([...state[key], ...listings.map(listing => listing.id)]);
+function mergeKnownIds(state, listingIds, key) {
+  const ids = new Set([...state[key], ...listingIds]);
   state[key] = [...ids].slice(-2000);
   state[key === "knownIds" ? "initialized" : "soldInitialized"] = true;
 }
@@ -223,9 +245,9 @@ async function sendActivationConfirmation(env, state, token, chatId) {
 async function run(env) {
   const token = requiredEnv(env, "TELEGRAM_BOT_TOKEN");
   const chatId = requiredEnv(env, "TELEGRAM_CHAT_ID");
-  const [liveListings, soldListings] = await Promise.all([
-    fetchListings("LIVE"),
-    fetchListings("SOLD")
+  const [liveIds, soldIds] = await Promise.all([
+    fetchListingIds("LIVE"),
+    fetchListingIds("SOLD")
   ]);
   const state = await loadState(env);
   const sendExisting = env.SEND_EXISTING_ON_FIRST_RUN === "true";
@@ -233,15 +255,16 @@ async function run(env) {
   const soldFirstRun = !state.soldInitialized;
   const knownLiveIds = new Set(state.knownIds);
   const knownSoldIds = new Set(state.soldKnownIds);
-  const newLiveListings = liveListings.filter(listing => !knownLiveIds.has(listing.id)).reverse();
-  const newSoldListings = soldListings.filter(listing => !knownSoldIds.has(listing.id)).reverse();
+  const newLiveIds = liveIds.filter(id => !knownLiveIds.has(id)).reverse();
+  const newSoldIds = soldIds.filter(id => !knownSoldIds.has(id)).reverse();
   let sentLive = 0;
   let sentSold = 0;
 
   if (!liveFirstRun || sendExisting) {
-    for (const listing of newLiveListings) {
+    for (const id of newLiveIds) {
+      const listing = await fetchListingDetail(id);
       await sendListing(listing, token, chatId, "live");
-      knownLiveIds.add(listing.id);
+      knownLiveIds.add(id);
       state.knownIds = [...knownLiveIds].slice(-2000);
       state.initialized = true;
       await saveState(env, state);
@@ -251,9 +274,10 @@ async function run(env) {
   }
 
   if (!soldFirstRun || sendExisting) {
-    for (const listing of newSoldListings) {
+    for (const id of newSoldIds) {
+      const listing = await fetchListingDetail(id);
       await sendListing(listing, token, chatId, "sold");
-      knownSoldIds.add(listing.id);
+      knownSoldIds.add(id);
       state.soldKnownIds = [...knownSoldIds].slice(-2000);
       state.soldInitialized = true;
       await saveState(env, state);
@@ -262,13 +286,13 @@ async function run(env) {
     }
   }
 
-  if (liveFirstRun) mergeKnownIds(state, liveListings, "knownIds");
-  if (soldFirstRun) mergeKnownIds(state, soldListings, "soldKnownIds");
+  if (liveFirstRun) mergeKnownIds(state, liveIds, "knownIds");
+  if (soldFirstRun) mergeKnownIds(state, soldIds, "soldKnownIds");
   await saveState(env, state);
   await sendActivationConfirmation(env, state, token, chatId);
 
   return {
-    checked: { live: liveListings.length, sold: soldListings.length },
+    checked: { live: liveIds.length, sold: soldIds.length },
     sent: { live: sentLive, sold: sentSold },
     seeded: { live: liveFirstRun, sold: soldFirstRun }
   };
