@@ -188,7 +188,7 @@ function formatListing(listing, kind) {
   ].filter(Boolean);
 
   return [
-    `<b>${kind === "sold" ? "Auto vendido recientemente en Motordil" : "Nueva publicación en Motordil"}</b>`,
+    `<b>${kind === "sold" ? "🔴 VENDIDO - Auto vendido recientemente en Motordil" : "Nueva publicación en Motordil"}</b>`,
     "",
     `<b>${escapeHtml(listing.title)}</b>`,
     `<b>Precio:</b> ${escapeHtml(listing.price)}`,
