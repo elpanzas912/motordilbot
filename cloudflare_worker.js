@@ -1,4 +1,5 @@
 const API_URL = "https://prod-api.motordil.com/graphql";
+const MEP_API_URL = "https://dolarapi.com/v1/dolares/bolsa";
 const STATE_KEY = "motordil-state";
 const PAGE_LIMIT = 500;
 const TELEGRAM_DELAY_MS = 1200;
@@ -113,6 +114,30 @@ async function fetchListingDetail(id) {
   return normalizeListing(listing);
 }
 
+async function fetchMepRate() {
+  let lastError;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(MEP_API_URL, {
+        headers: { "User-Agent": "MotordilCloudflareWorker/1.0" },
+        signal: AbortSignal.timeout(10000)
+      });
+      const data = await response.json();
+      const rate = Number(data.venta);
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!Number.isFinite(rate) || rate <= 0) throw new Error("Cotización MEP inválida.");
+      return rate;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) await sleep(attempt * 1000);
+    }
+  }
+
+  throw lastError;
+}
+
 function normalizeListing(listing) {
   const metadata = listing.metadata || {};
   const make = metadata.make?.make || "";
@@ -122,12 +147,15 @@ function normalizeListing(listing) {
   const price = listing.price === null || listing.price === undefined
     ? "No informado"
     : `${listing.currency?.symbol || ""} ${NUMBER_FORMATTER.format(listing.price)}`.trim();
+  const priceValue = listing.price === null || listing.price === undefined ? null : Number(listing.price);
 
   return {
     id: String(listing.id),
     slug: listing.slug || String(listing.id),
     title: title || "Vehículo publicado",
     price,
+    priceValue: Number.isFinite(priceValue) ? priceValue : null,
+    currency: String(listing.currency?.symbol || "").toUpperCase(),
     year: listing.year,
     kilometers: listing.odometer,
     transmission: listing.details?.transmissionType,
@@ -179,7 +207,14 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-function formatListing(listing, kind) {
+function formatPrice(listing, mepRate) {
+  if (listing.currency !== "ARS" || listing.priceValue === null || !mepRate) return listing.price;
+
+  const usdPrice = Math.round(listing.priceValue / mepRate);
+  return `${listing.price} / USD ${NUMBER_FORMATTER.format(usdPrice)}`;
+}
+
+function formatListing(listing, kind, mepRate) {
   const details = [
     listing.year && `Año: ${listing.year}`,
     listing.kilometers !== null && listing.kilometers !== undefined && `KM: ${NUMBER_FORMATTER.format(listing.kilometers)}`,
@@ -191,7 +226,7 @@ function formatListing(listing, kind) {
     `<b>${kind === "sold" ? "🔴 VENDIDO - Auto vendido recientemente en Motordil" : "Nueva publicación en Motordil"}</b>`,
     "",
     `<b>${escapeHtml(listing.title)}</b>`,
-    `<b>Precio:</b> ${escapeHtml(listing.price)}`,
+    `<b>Precio:</b> ${escapeHtml(formatPrice(listing, mepRate))}`,
     details.map(detail => escapeHtml(detail)).join(" | "),
     "",
     `<a href="${escapeHtml(listing.url)}">Ver publicación</a>`
@@ -204,8 +239,8 @@ async function telegramRequest(method, body, token) {
   return response.result;
 }
 
-async function sendListing(listing, token, chatId, kind) {
-  const text = formatListing(listing, kind);
+async function sendListing(listing, token, chatId, kind, mepRate) {
+  const text = formatListing(listing, kind, mepRate);
 
   if (listing.image) {
     try {
@@ -257,13 +292,24 @@ async function run(env) {
   const knownSoldIds = new Set(state.soldKnownIds);
   const newLiveIds = liveIds.filter(id => !knownLiveIds.has(id)).reverse();
   const newSoldIds = soldIds.filter(id => !knownSoldIds.has(id)).reverse();
+  let mepRatePromise;
+  const getMepRate = () => {
+    if (!mepRatePromise) {
+      mepRatePromise = fetchMepRate().catch(error => {
+        console.warn(`No se pudo obtener el dólar MEP: ${error.message}`);
+        return null;
+      });
+    }
+    return mepRatePromise;
+  };
   let sentLive = 0;
   let sentSold = 0;
 
   if (!liveFirstRun || sendExisting) {
     for (const id of newLiveIds) {
       const listing = await fetchListingDetail(id);
-      await sendListing(listing, token, chatId, "live");
+      const mepRate = listing.currency === "ARS" ? await getMepRate() : null;
+      await sendListing(listing, token, chatId, "live", mepRate);
       knownLiveIds.add(id);
       state.knownIds = [...knownLiveIds].slice(-2000);
       state.initialized = true;
@@ -276,7 +322,8 @@ async function run(env) {
   if (!soldFirstRun || sendExisting) {
     for (const id of newSoldIds) {
       const listing = await fetchListingDetail(id);
-      await sendListing(listing, token, chatId, "sold");
+      const mepRate = listing.currency === "ARS" ? await getMepRate() : null;
+      await sendListing(listing, token, chatId, "sold", mepRate);
       knownSoldIds.add(id);
       state.soldKnownIds = [...knownSoldIds].slice(-2000);
       state.soldInitialized = true;
